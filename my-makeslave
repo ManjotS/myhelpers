@@ -1,0 +1,70 @@
+#!/bin/bash
+
+USAGE="Usage: my-makeslave sourceip [localip]"
+
+if [ -z "$1" ]; then
+	echo "No source specified"
+	echo USAGE
+fi
+
+SOURCE="$1"
+DEST="$2"
+
+if [ -z "$2" ]; then
+	DEST=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | tail -n 1)
+fi
+
+confirm() {
+    # call with a prompt string or use a default
+    read -r -p "${1:-Are you sure? [y/N]} " response
+    case "$response" in
+        [yY][eE][sS]|[yY]) 
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+doubleconfirm() {
+	confirm && confirm "ARE YOU ABSOLUTELY SURE?" || return 1
+}
+
+echo "This script will erase /var/lib/mysql and all contents irrecoverably."
+doubleconfirm || exit 1
+
+# stop mysql
+service mysql stop
+killall -9 mysqld
+
+# wipe data dir
+rm -rf /var/lib/mysql/*
+
+# start receiving 
+nc -l 9999 | xbstream -x -C /var/lib/mysql/ &
+
+# start sending
+ssh $SOURCE "innobackupex --parallel=6 --compress --compress-threads=4 --no-lock --stream=xbstream --slave-info ./ | nc $DEST 9999"
+
+# innobackup decompress and apply logs
+innobackupex --decompress /var/lib/mysql
+innobackupex --apply-log --use-memory=16G /var/lib/mysql
+
+# permissions
+chown --recursive mysql.mysql /var/lib/mysql
+
+echo "Slave was at:"
+cat /var/lib/mysql/xtrabackup_slave_info
+
+# starting mysql
+service mysql start
+
+confirm "Start Slave?"
+if [[ $? -eq 0 ]]; then
+	echo -n "MySQL replication user: "
+	read repluser
+	echo -n "MySQL password for $repluser: "
+	read -s replpass
+	mysql -e "$(cat /var/lib/mysql/xtrabackup_slave_info), MASTER_HOST='$SOURCE', MASTER_USER='$repluser', MASTER_PASSWORD='$replpass'; START SLAVE; SELECT SLEEP(0.5); SHOW SLAVE STATUS\G";
+fi
