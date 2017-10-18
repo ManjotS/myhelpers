@@ -1,22 +1,91 @@
 #!/bin/bash
+# my-makeslave by Manjot Singh at Percona
+# v 1.0 - 10/2017
 
-USAGE="Usage: my-makeslave sourceip [localip]"
+CONF=/etc/mysql/my-makeslave.conf
 
-if [ -z "$1" ]; then
-	echo "No source specified"
-	echo USAGE
+function usage () {
+    echo "Usage: my-makeslave sourceip [localip]" >&2
+    exit
+}
+
+# Normal Colors
+export Black='\e[0;30m'        # Black
+export Red='\e[0;31m'          # Red
+export Green='\e[0;32m'        # Green
+export Yellow='\e[0;33m'       # Yellow
+export Blue='\e[0;34m'         # Blue
+export Purple='\e[0;35m'       # Purple
+export Cyan='\e[0;36m'         # Cyan
+export White='\e[0;37m'        # White
+
+# Bold
+export BBlack='\e[1;30m'       # Black
+export BRed='\e[1;31m'         # Red
+export BGreen='\e[1;32m'       # Green
+export BYellow='\e[1;33m'      # Yellow
+export BBlue='\e[1;34m'        # Blue
+export BPurple='\e[1;35m'      # Purple
+export BCyan='\e[1;36m'        # Cyan
+export BWhite='\e[1;37m'       # White
+
+# Background
+export OnBlack='\e[40m'       # Black
+export OnRed='\e[41m'         # Red
+export OnGreen='\e[42m'       # Green
+export OnYellow='\e[43m'      # Yellow
+export OnBlue='\e[44m'        # Blue
+export OnPurple='\e[45m'      # Purple
+export OnCyan='\e[46m'        # Cyan
+export OnWhite='\e[47m'       # White
+
+export NC="\e[m"               # Color Reset
+
+function alert () { 
+    echo
+    echo -e "${Red}$1${NC}"
+}
+
+function info () {
+    echo -e "${Green}$1${NC}"
+}
+
+function debug () {
+    echo -e "${Yellow}$1${NC}"
+}
+
+if [ ! -e $CONF ]; then
+  alert "Configuration file $CONF does not exist!"
+  exit 1
 fi
 
+source $CONF
+
+if [ -z "$1" ]; then
+	alert "No source specified" >&2
+	usage
+fi
+
+trap "exit 1" TERM
+export TOP_PID=$$
+
+which innobackupex || (alert "Xtrabackup is not installed" >&2 && kill -s TERM $TOP_PID)
+which qpress || (alert "qpress is not installed" >&2 && kill -s TERM $TOP_PID)
+
 SOURCE="$1"
-DEST="$2"
 
 if [ -z "$2" ]; then
-	DEST=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | tail -n 1)
+	AUTODEST=$(ifconfig | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1' | tail -n 1)
+    if [ -z "$DESTINATION" ]; then
+        DESTINATION="$AUTODEST" 
+    fi
+else
+    DESTINATION="$2"
 fi
 
 confirm() {
     # call with a prompt string or use a default
-    read -r -p "${1:-Are you sure? [y/N]} " response
+    read -r -p "${1:-Are you sure?} [y/N] " response
     case "$response" in
         [yY][eE][sS]|[yY]) 
             return 0
@@ -31,40 +100,79 @@ doubleconfirm() {
 	confirm && confirm "ARE YOU ABSOLUTELY SURE?" || return 1
 }
 
-echo "This script will erase /var/lib/mysql and all contents irrecoverably."
+if [ -z "$DATADIR" ]; then
+    alert "DATADIR variable is empty!" >&2
+    exit 1
+fi
+
+info "Checking SSH..."
+function checkSSH () {
+    $SSH $1 "which innobackupex" 2>&1 > /dev/null
+    if [ $? -ne 0 ]; then
+            alert "Unable to SSH to $1 or source does not have Xtrabackup installed." >&2
+            exit 1
+    fi
+}
+
+alert "This script will erase $DATADIR and all contents irrecoverably."
 doubleconfirm || exit 1
 
-# stop mysql
+info "Stopping MySQL..."
 service mysql stop
 killall -9 mysqld
 
-# wipe data dir
-rm -rf /var/lib/mysql/*
+(($DEBUG)) && service mysql status
+(($DEBUG)) && ps waxu | grep mysqld
 
-# start receiving 
-nc -l 9999 | xbstream -x -C /var/lib/mysql/ &
+info "Wiping $DATADIR..."
+rm -rf ${DATADIR}/* || (alert "Unable to delete..." >&2 && kill -s TERM $TOP_PID)
 
-# start sending
-ssh $SOURCE "innobackupex --parallel=6 --compress --compress-threads=4 --no-lock --stream=xbstream --slave-info ./ | nc $DEST 9999"
+(($DEBUG)) && ls $DATADIR
 
-# innobackup decompress and apply logs
-innobackupex --decompress /var/lib/mysql
-innobackupex --apply-log --use-memory=16G /var/lib/mysql
+info "Starting xbstream..."
+nc -l $PORT | xbstream -x -C "${DATADIR}/" &
 
-# permissions
-chown --recursive mysql.mysql /var/lib/mysql
+info "Starting Backup..."
+$SSH $SOURCE "innobackupex --parallel=$PARALLEL --compress --compress-threads=$THREADS --stream=xbstream --slave-info ./ | nc $DESTINATION $PORT"
 
-echo "Slave was at:"
-cat /var/lib/mysql/xtrabackup_slave_info
+(($DEBUG)) && ls $DATADIR
 
-# starting mysql
+info "Decompressing Backup..."
+innobackupex --decompress $DATADIR
+
+(($DEBUG)) && ls $DATADIR
+
+info "Applying logs..."
+innobackupex --apply-log --use-memory="${RESTORE_MEMORY}" $DATADIR
+
+(($DEBUG)) && ls $DATADIR
+
+info "Applying Permissions..."
+chown --recursive mysql.mysql $DATADIR
+
+info "Source was at:"
+cat "${DATADIR}/xtrabackup_binlog_info"
+
+info "Starting MySQL..."
 service mysql start
 
 confirm "Start Slave?"
 if [[ $? -eq 0 ]]; then
-	echo -n "MySQL replication user: "
-	read repluser
-	echo -n "MySQL password for $repluser: "
-	read -s replpass
-	mysql -e "$(cat /var/lib/mysql/xtrabackup_slave_info), MASTER_HOST='$SOURCE', MASTER_USER='$repluser', MASTER_PASSWORD='$replpass'; START SLAVE; SELECT SLEEP(0.5); SHOW SLAVE STATUS\G";
+    if [[ "$REPLUSER" == "" || "$REPLPASSWORD" == "" ]]; then
+        echo -n "MySQL replication user: "
+        read REPLUSER
+    	echo -n "MySQL password for $REPLUSER: "
+	   read -s REPLPASSWORD
+    fi
+    MASTERSTR="CHANGE MASTER TO MASTER_HOST='$SOURCE', MASTER_USER='${REPLUSER}', MASTER_PASSWORD='${REPLPASSWORD}'"
+    if [ $AUTOPOSITION -ne 1 ]; then
+        MASTERLOG=$(cat "${DATADIR}/xtrabackup_binlog_info" | awk '{print $1}')
+        MASTERPOS=$(cat "${DATADIR}/xtrabackup_binlog_info" | awk '{print $2}')
+	    MASTERSTR="${MASTERSTR}, MASTER_LOG_FILE='${MASTERLOG}', MASTER_LOG_POS=${MASTERPOS}, MASTER_AUTO_POSITION=0"
+    else
+        MASTERSTR="${MASTERSTR}, MASTER_AUTO_POSITION=1"
+    fi
+    mysql -e "${MASTERSTR}; START SLAVE; SELECT SLEEP(5); SHOW SLAVE STATUS\G";
 fi
+
+info "Done"
