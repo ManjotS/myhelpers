@@ -1,0 +1,49 @@
+#!/bin/bash
+# Adapted from https://www.percona.com/blog/2012/01/18/backing-up-binary-log-files-with-mysqlbinlog/
+
+CONF=/etc/mysql/my-binlogger.conf
+
+if [ ! -e $CONF ]; then
+  echo "Configuration file $CONF does not exist!"
+  exit 1
+fi
+
+source $CONF
+
+# Make sure target directory for backups exists
+if [ ! -e $BACKUPDIR ]; then
+  mkdir -p $BACKUPDIR
+fi
+
+cd $BACKUPDIR
+
+echo "Backup dir: $BACKUPDIR "
+
+CONNSTRING="--host $MYSQLHOST --port $MYSQLPORT -u $MYSQLUSER -p$MYSQLPASS"
+
+while :
+do
+LASTFILE=`ls -1 $BACKUPDIR|grep -v orig|grep -v index|tail -n 1`
+
+if [ ! -e "$LASTFILE" ]; then
+   LASTFILE=`mysql $CONNSTRING -Bse "show binary logs" | grep -v 0$ | sort -n | head -n1 | awk -F"\\\\\s" '{print $1}'`
+#  echo "No last binlog, rsync binlogs to backup directory and try again"
+#  exit 1
+fi
+
+TIMESTAMP=`date +%s`
+FILESIZE=$(stat -c%s "$LASTFILE")
+
+if [ $FILESIZE -gt 0 ]; then
+    echo "Backing up last binlog"
+    mv $LASTFILE $LASTFILE.orig$TIMESTAMP
+fi
+touch $LASTFILE
+echo "Starting live binlog backup"
+$MBL --raw --read-from-remote-server --stop-never $CONNSTRING $LASTFILE
+
+echo "mysqlbinlog exited with $? trying to reconnect in $RESPAWN seconds."
+
+sleep $RESPAWN
+done
+

@@ -2,6 +2,15 @@
 
 Simple helper scripts for MySQL. Requires .my.cnf or .mylogin with login info in user directory.
 
+## my-binlogger
+
+This script will stream binlogs for the purposes of backup.
+
+Add to root crontab on a backup server: 
+```@reboot	nohup /usr/local/bin/my-binlogger 2>&1 > /var/log/my-binlogger.log &```
+
+The conf file from conf/ should be placed in /etc/mysql/ (or the path in my-binlogger should be changed).
+
 ## my-makeslave
 
 Usage: my-makeslave sourceip [localip]
