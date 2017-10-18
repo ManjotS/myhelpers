@@ -1,0 +1,4 @@
+#!/bin/bash
+
+mysql -D mysql -e "show  global variables like '%'" | egrep $1
+

@@ -22,3 +22,9 @@ Will delete the local mysql directory and stream an xtrabackup from the source.
 Usage: my-slavestatus [seconds]
 
 Displays slave status. If seconds are provided it will use watch to refresh the status.
+
+## my-vars
+
+Usage: my-vars some-string
+
+Greps the mysql variables for the provided string.
