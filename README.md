@@ -15,7 +15,7 @@ The conf file from conf/ should be placed in /etc/mysql/ (or the path in my-binl
 
 Usage: my-makeslave sourceip [localip]
 
-Will delete the local mysql directory and stream an xtrabackup from the source.
+Run this on the target host to sync with the master. Will delete the local mysql directory and stream an xtrabackup from the source.
 
 The conf file from conf/ should be placed in /etc/mysql/ (or the path in my-makeslave should be changed).
 
