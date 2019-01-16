@@ -1,6 +1,8 @@
 # myhelpers
 
-Simple helper scripts for MySQL. Requires .my.cnf or .mylogin with login info in user directory.
+Simple helper scripts for MariaDB and MySQL. Most tools require .my.cnf or .mylogin with login info in user directory.
+
+Dev branch for things in progress or that don't really work.
 
 ## my-binlogger
 
